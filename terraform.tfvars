@@ -3,7 +3,7 @@ tags={
     product_group   = "tfe"
     environment     = "sandbox"
     provider        = "azurerm"
-    subscription_id = "8870ec59-f6a6-4350-bd65-84d86389da9f"   
+    subscription_id = "000000000-0000-0000-0000-0000000"   
 }
 
 names={
@@ -13,5 +13,5 @@ names={
 
 db_id="1337"
 location="eastus"
-resource_group_name="rg-mssqlsrvr-sandbox-1337"
-subscription_name="infrastructure-sandbox"
+resource_group_name="rg-mssqlsrvr"
+subscription_name="sandbox"
