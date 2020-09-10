@@ -1,160 +1,110 @@
-locals {
-    if_threat_detection_policy_enabled  = var.enable_threat_detection_policy ? [{}] : []
-    if_extended_auditing_policy_enabled = var.enable_auditing_policy ? [{}] : []
+variable "db_id" {
+  description = "identifier appended to db name (productname-environment-mysql<db_id>)"
+  type        = string
 }
 
-# Configure the Azure Provider.
+variable "names" {
+  description = "names to be applied to resources"
+  type        = map(string)
+}
+
+variable "tags" {
+  description = "tags to be applied to resources"
+  type        = map(string)
+}
+
+# Configure Providers
 provider "azurerm" {
   version = ">=2.2.0"
+  subscription_id = "00000000-0000-0000-0000-00000000"
   features {}
 }
 
-# Creates random password for mysql db admin account.
-resource "random_password" "db_login_password" {
-  length    = 24
-  special   = true
+##
+# Pre-Built Modules 
+##
+
+module "subscription" {
+  source          = "github.com/Azure-Terraform/terraform-azurerm-subscription-data.git?ref=v1.0.0"
+  subscription_id = "b0837458-adf3-41b0-a8fb-c16f9719627d"
 }
 
-# Primary ms sql server
-resource "azurerm_mssql_server" "primary" {
-  name                         = "sql-srvr-${var.names.product_name}-${var.names.environment}-mysql${var.db_id}"
-  resource_group_name          = var.resource_group_name
-  location                     = var.location
-  version                      = var.srvr_version
-  administrator_login          = var.administrator_login
-  administrator_login_password = random_password.db_login_password.result
-
-  dynamic "extended_auditing_policy" {
-        for_each = local.if_extended_auditing_policy_enabled
-        content {
-            storage_account_access_key = var.storage_account_access_key 
-            storage_endpoint           = var.storage_endpoint
-            retention_in_days          = var.log_retention_days
-        }
-    }
-  tags = var.tags
+module "rules" {
+  source = "git@github.com:[redacted]/python-azure-naming.git?ref=tf"
 }
 
-# SQL servers - Secondary server is depends_on Failover Group
-resource "azurerm_mssql_server" "secondary" {
-  count                         = var.enable_failover_group ? 1 : 0
-  name                          = "sql-srvr-failover${var.names.product_name}-${var.names.environment}-mysql${var.db_id}"
-  resource_group_name           = var.resource_group_name
-  location                      = var.secondary_sql_server_location
-  version                       = var.srvr_version
-  administrator_login           = var.administrator_login
-  administrator_login_password  = random_password.db_login_password.result
+# For tags and info see https://github.com/Azure-Terraform/terraform-azurerm-metadata 
+# For naming convention see https://github.com/[redacted]/python-azure-naming 
+module "metadata" {
+  source = "github.com/Azure-Terraform/terraform-azurerm-metadata.git?ref=v1.1.0"
 
-  dynamic "extended_auditing_policy" {
-        for_each = local.if_extended_auditing_policy_enabled
-        content {
-            storage_endpoint           = var.storage_endpoint
-            storage_account_access_key = var.storage_account_access_key 
-            retention_in_days          = var.log_retention_days
-        }
-    }
+  naming_rules = module.rules.yaml
+  
+  market              = "us"
+  location            = "useast1"
+  sre_team            = "alpha"
+  environment         = "sandbox"
+  project             = "mssql"
+  business_unit       = "iog"
+  product_group       = "tfe"
+  product_name        = "mssqlsrvr"
+  subscription_id     = "0000000-0000-0000-0000-0000000"
+  subscription_type   = "nonprod"
+  resource_group_type = "app"
 }
 
-# Manages a Microsoft SQL Azure Database.
-resource "azurerm_mssql_database" "db" {
-  name                  = "sql-db-${var.names.product_name}-${var.names.environment}-mysql${var.db_id}"
-  server_id             = azurerm_mssql_server.primary.id
-  collation             = var.collation
-  license_type          = var.license_type
-  sku_name              = var.sku_name
-  max_size_gb           = var.max_size_gb
-  zone_redundant        = var.zone_redundant
-  read_scale            = var.read_scale
-  read_replica_count    = var.read_replica_count
-
-  dynamic "threat_detection_policy" {
-        for_each = local.if_threat_detection_policy_enabled
-        content {
-            state                      = "Enabled"
-            storage_endpoint           = var.storage_endpoint
-            storage_account_access_key = var.storage_account_access_key 
-            retention_days             = var.log_retention_days
-        }
-    }
-
-  dynamic "extended_auditing_policy" {
-        for_each = local.if_extended_auditing_policy_enabled
-        content {
-            storage_endpoint           = var.storage_endpoint
-            storage_account_access_key = var.storage_account_access_key 
-            retention_in_days          = var.log_retention_days
-        }
-    }
-
-  tags = var.tags
+module "resource_group" {
+  source = "github.com/Azure-Terraform/terraform-azurerm-resource-group.git?ref=v1.0.0"
+  
+  location = module.metadata.location
+  names    = module.metadata.names
+  tags     = module.metadata.tags
 }
 
-#per_database_settings {
-#  geoBackupPolicies         = false
-#  securityAlertPolicies     = false
-#  transparentDataEncryptionName = enabled
-#  vulnerabilityAssessments  = false
-#}
-
-
-# Adding AD Admin to SQL Server - Secondary server depend on Failover Group - Default is "false"
-data "azurerm_client_config" "current" {}
-
-resource "azurerm_sql_active_directory_administrator" "aduser1" {
-    count                   = var.enable_sql_ad_admin ? 1 : 0
-    server_name             = azurerm_mssql_server.primary.name
-    resource_group_name     = var.resource_group_name
-    login                   = var.ad_admin_login_name
-    tenant_id               = data.azurerm_client_config.current.tenant_id
-    object_id               = data.azurerm_client_config.current.object_id
+# mysql-server storage account
+module "storage_acct" {
+  source = "../ms_sql_module/storage_account"
+  # Required inputs 
+  db_id               = var.db_id
+  # Pre-Built Modules  
+  location            = module.metadata.location
+  names               = module.metadata.names
+  tags                = module.metadata.tags
+  resource_group_name = module.resource_group.name
 }
 
-resource "azurerm_sql_active_directory_administrator" "aduser2" {
-    count                   = var.enable_failover_group && var.enable_sql_ad_admin ? 1 : 0
-    server_name             = azurerm_mssql_server.secondary.0.name
-    resource_group_name     = var.resource_group_name
-    login                   = var.ad_admin_login_name
-    tenant_id               = data.azurerm_client_config.current.tenant_id
-    object_id               = data.azurerm_client_config.current.object_id
+# SQL server advanced threat protection 
+module "atp" {
+  source = "../ms_sql_module/advanced_threat_protection"
+  # Required inputs 
+  storage_account_id  = module.storage_acct.storage_account_id
 }
 
-# Azure SQL Failover Group - Default is "false" 
-resource "azurerm_sql_failover_group" "fog" {
-  count               = var.enable_failover_group ? 1 : 0
-  name                = "sqldb-failover-group"
-  resource_group_name = var.resource_group_name
-  server_name         = azurerm_mssql_server.primary.name
-  databases           = [azurerm_mssql_database.db.id]
-  tags                = var.tags
-  partner_servers {
-      id = azurerm_mssql_server.secondary.0.id
-    }
-
-  read_write_endpoint_failover_policy {
-      mode           = "Automatic"
-      grace_minutes  = 60
-    }
-
-  readonly_endpoint_failover_policy {
-      mode           = "Enabled"
-    }
-}
-
-# Azure SQL Firewall Rule - Default is "false"
-resource "azurerm_sql_firewall_rule" "fw01" {
-    count                = var.enable_firewall_rules && length(var.firewall_rules) > 0 ? length(var.firewall_rules) : 0
-    name                 = element(var.firewall_rules, count.index).name
-    resource_group_name  = var.resource_group_name
-    server_name          = azurerm_mssql_server.primary.name
-    start_ip_address     = element(var.firewall_rules, count.index).start_ip_address
-    end_ip_address       = element(var.firewall_rules, count.index).end_ip_address
-}
-
-resource "azurerm_sql_firewall_rule" "fw02" {
-    count                = var.enable_failover_group && var.enable_firewall_rules && length(var.firewall_rules) > 0 ? length(var.firewall_rules) : 0
-    name                 = element(var.firewall_rules, count.index).name
-    resource_group_name  = var.resource_group_name
-    server_name          = azurerm_mssql_server.secondary.0.name
-    start_ip_address     = element(var.firewall_rules, count.index).start_ip_address
-    end_ip_address       = element(var.firewall_rules, count.index).end_ip_address
+# mysql-server module
+module "mssql_server" {
+  source = "../ms_sql_module/ms_sql_server"
+  # Required inputs 
+  db_id                          = var.db_id
+  subscription_name              = "infrastructure-sandbox"
+  # SQL server and database audit policies and advanced threat protection 
+  enable_auditing_policy         = true
+  enable_threat_detection_policy = true
+  # SQL failover group
+  enable_failover_group          = true
+  secondary_sql_server_location  = "westus"
+  # Azure AD administrator for azure sql server
+  enable_sql_ad_admin            = true
+  ad_admin_login_name            = "first.last@contoso.com"
+  log_retention_days             = 7
+  # Storage endpoints for audit logs and atp logs
+  storage_endpoint               = module.storage_acct.primary_blob_endpoint
+  storage_account_access_key     = module.storage_acct.primary_access_key   
+  # SQL server firewall naming rules
+  enable_firewall_rules          = true
+  
+  # Pre-Built Modules  
+  location            = module.metadata.location
+  names               = module.metadata.names
+  tags                = module.metadata.tags
+  resource_group_name = module.resource_group.name
 }
