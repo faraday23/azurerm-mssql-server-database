@@ -1,8 +1,15 @@
-variable "db_id" {
-  description = "identifier appended to db name (productname-environment-mysql<db_id>)"
+# required server inputs
+variable "srvr_id" {
+  description = "identifier appended to srvr name for more info see https://github.com/[redacted]/python-azure-naming"
   type        = string
 }
 
+variable "srvr_id_replica" {
+  description = "identifier appended to srvr name for more info see https://github.com/[redacted]/python-azure-naming"
+  type        = string
+}
+
+# required tags
 variable "names" {
   description = "names to be applied to resources"
   type        = map(string)
@@ -15,7 +22,7 @@ variable "tags" {
 
 # Configure Providers
 provider "azurerm" {
-  version = ">=2.2.0"
+  version = ">=2.25.0"
   subscription_id = "00000000-0000-0000-0000-00000000"
   features {}
 }
@@ -26,7 +33,7 @@ provider "azurerm" {
 
 module "subscription" {
   source          = "github.com/Azure-Terraform/terraform-azurerm-subscription-data.git?ref=v1.0.0"
-  subscription_id = "b0837458-adf3-41b0-a8fb-c16f9719627d"
+  subscription_id = "00000000-0000-0000-0000-00000000"
 }
 
 module "rules" {
@@ -34,77 +41,94 @@ module "rules" {
 }
 
 # For tags and info see https://github.com/Azure-Terraform/terraform-azurerm-metadata 
-# For naming convention see https://github.com/[redacted]/python-azure-naming 
+# For naming convention see https://github.com/openrba/python-azure-naming 
 module "metadata" {
   source = "github.com/Azure-Terraform/terraform-azurerm-metadata.git?ref=v1.1.0"
 
   naming_rules = module.rules.yaml
   
   market              = "us"
-  location            = "useast1"
+  location            = "useast1" # for location list see - https://github.com/[redacted]/python-azure-naming#rbaazureregion
   sre_team            = "alpha"
-  environment         = "sandbox"
+  environment         = "sandbox" # for environment list see - https://github.com/[redacted]/python-azure-naming#rbaenvironment
   project             = "mssql"
   business_unit       = "iog"
   product_group       = "tfe"
-  product_name        = "mssqlsrvr"
-  subscription_id     = "0000000-0000-0000-0000-0000000"
+  product_name        = "mssql"   # for product name list see - https://github.com/[redacted]/python-azure-naming#rbaproductname
+  subscription_id     = "00000000-0000-0000-0000-00000000"
   subscription_type   = "nonprod"
   resource_group_type = "app"
 }
 
-module "resource_group" {
-  source = "github.com/Azure-Terraform/terraform-azurerm-resource-group.git?ref=v1.0.0"
-  
-  location = module.metadata.location
-  names    = module.metadata.names
-  tags     = module.metadata.tags
-}
-
-# mysql-server storage account
+# mssql-server storage account
 module "storage_acct" {
   source = "../ms_sql_module/storage_account"
   # Required inputs 
-  db_id               = var.db_id
+  srvr_id             = "01"
   # Pre-Built Modules  
   location            = module.metadata.location
   names               = module.metadata.names
   tags                = module.metadata.tags
-  resource_group_name = module.resource_group.name
+  resource_group_name = "rg-azure-demo-mssql-01"
 }
 
-# SQL server advanced threat protection 
-module "atp" {
-  source = "../ms_sql_module/advanced_threat_protection"
-  # Required inputs 
-  storage_account_id  = module.storage_acct.storage_account_id
-}
-
-# mysql-server module
+# mssql-server module
 module "mssql_server" {
-  source = "../ms_sql_module/ms_sql_server"
+  source = "../ms_sql_module/ms_sql_server_service_endpoint"
+  # Pre-Built Modules  
+  location                       = module.metadata.location
+  names                          = module.metadata.names
+  tags                           = module.metadata.tags
+  # Storage endpoints for audit logs and atp logs
+  storage_endpoint               = module.storage_acct.primary_blob_endpoint
+  storage_account_access_key     = module.storage_acct.primary_access_key   
   # Required inputs 
-  db_id                          = var.db_id
-  subscription_name              = "infrastructure-sandbox"
+  srvr_id                        = "01"
+  srvr_id_replica                = "02"
+  resource_group_name            = "rg-azure-demo-mssql-01"
+  # Enable creation of Database 
+  enable_db                      = true
   # SQL server and database audit policies and advanced threat protection 
   enable_auditing_policy         = true
   enable_threat_detection_policy = true
   # SQL failover group
   enable_failover_group          = true
   secondary_sql_server_location  = "westus"
-  # Azure AD administrator for azure sql server
+  # SQL server Azure AD administrator 
   enable_sql_ad_admin            = true
-  ad_admin_login_name            = "first.last@contoso.com"
+  ad_admin_login_name            = "first.last@risk.regn.net"
+  ad_admin_login_name_replica    = "first.last@risk.regn.net"
   log_retention_days             = 7
-  # Storage endpoints for audit logs and atp logs
-  storage_endpoint               = module.storage_acct.primary_blob_endpoint
-  storage_account_access_key     = module.storage_acct.primary_access_key   
-  # SQL server firewall naming rules
-  enable_firewall_rules          = true
-  
-  # Pre-Built Modules  
-  location            = module.metadata.location
-  names               = module.metadata.names
-  tags                = module.metadata.tags
-  resource_group_name = module.resource_group.name
+  # SQL server elastic pooling
+  enable_elasticpool             = true
+  per_database_settings = [{
+    max_capacity = 4
+    min_capacity = 1
+  }]
+  sku = [{
+    capacity = 4
+    family   = "Gen5"
+    name     = "GP_Gen5"
+    tier     = "GeneralPurpose"
+  }]
+  # private link endpoint
+  enable_private_endpoint        = false 
+  public_network_access_enabled  = false      # public access will need to be enabled to use vnet rules
+  # vnet rules
+  enable_vnet_rule               = false
+  # Virtual network - for Existing virtual network
+  vnet_resource_group_name         = "rg-azure-demo-mssql-01"       #must be existing resource group within same region as primary server
+  vnet_replica_resource_group_name = "rg-azure-demo-mssql-02"       #must be existing resource group within same region as replica server
+  virtual_network_name             = "vnet-sandbox-eastus-mssql-01" #must be existing vnet with available address space
+  virtual_network_name_replica     = "vnet-sandbox-westus-mssql-02" #must be existing vnet with available address space
+  subnet_name_primary              = "default" #must be existing subnet name 
+  subnet_name_replica              = "default" #must be existing subnet name 
+  # SQL server firewall access control rules
+  enable_firewall_rules           = false
+  firewall_rules = [
+                {name             = "desktop-ip"
+                start_ip_address  = "209.243.55.98"
+                end_ip_address    = "209.243.55.98"}]
 }
+
+
